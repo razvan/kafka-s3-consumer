@@ -151,10 +151,12 @@ public class App
       consumer = new SimpleConsumer(conf.getKafkaHost(), conf.getKafkaPort(), 5000, 4*1024);
     }
 
+    @Override
     public boolean hasNext() {
       return true;
     }
 
+    @Override
     public MessageAndOffset next() {
       if (messageSetIterator == null || !messageSetIterator.hasNext()) {
         System.err.println("Fetching message from offset: " + offset);
@@ -176,6 +178,7 @@ public class App
       return message;
     }
 
+    @Override
     public void remove() {
       throw new UnsupportedOperationException("Method remove is not supported by this iterator.");
     }
