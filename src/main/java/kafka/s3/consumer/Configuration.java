@@ -11,6 +11,7 @@ public interface Configuration {
 
   public String getKafkaHost();
   public int getKafkaPort();
+  public int getKafkaBrokerId();
   public Map<String, Integer> getTopicsAndPartitions();
 
   public int getS3MaxObjectSize();

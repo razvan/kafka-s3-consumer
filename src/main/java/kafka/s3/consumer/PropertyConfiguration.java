@@ -14,6 +14,7 @@ public class PropertyConfiguration implements Configuration {
   private static final String PROP_S3_PREFIX = "s3.prefix";
   private static final String PROP_KAFKA_HOST = "kafka.host";
   private static final String PROP_KAFKA_PORT = "kafka.port";
+  private static final String PROP_KAFKA_BROKER_ID = "kafka.brokerid";
   private static final String PROP_S3_MAX_OBJECT_SIZE = "s3.maxobjectsize";
   private static final String PROP_KAFKA_MAX_MESSAGE_SIZE = "kafka.maxmessagesize";
   private static final String PROP_KAFKA_TOPICS = "kafka.topics";
@@ -74,6 +75,15 @@ public class PropertyConfiguration implements Configuration {
       throw new RuntimeException("Invalid property " + PROP_KAFKA_PORT);
     }
     return Integer.valueOf(kafkaPort);
+  }
+
+  @Override
+  public int getKafkaBrokerId() {
+    String kafkaBrokerId = props.getProperty(PROP_KAFKA_BROKER_ID);
+    if (kafkaBrokerId == null || kafkaBrokerId.isEmpty()) {
+      throw new RuntimeException("Invalid property " + PROP_KAFKA_BROKER_ID);
+    }
+    return Integer.valueOf(kafkaBrokerId);
   }
 
   @Override
