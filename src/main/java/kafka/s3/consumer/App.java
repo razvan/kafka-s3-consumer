@@ -77,17 +77,17 @@ public class App
     }
 
   private static Configuration loadConfiguration(String[] args) {
-    if (args == null || args.length != 1)
-      throw new RuntimeException(String.format("Usage: java %s <props>", App.class.getName()));
-
     Properties props = new Properties();
 
     try {
-      props.load(new FileInputStream(new File(args[0])));
+      if (args == null || args.length != 1) {
+        props.load(App.class.getResourceAsStream("/app.properties"));
+      } else {
+        props.load(new FileInputStream(new File(args[0])));
+      }
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
-
     return new PropertyConfiguration(props);
   }
 
