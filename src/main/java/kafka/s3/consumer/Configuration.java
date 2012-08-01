@@ -1,5 +1,7 @@
 package kafka.s3.consumer;
 
+import java.util.Map;
+
 public interface Configuration {
 
   public String getS3AccessKey();
@@ -9,8 +11,7 @@ public interface Configuration {
 
   public String getKafkaHost();
   public int getKafkaPort();
-  public String getKafkaTopic();
-  public int getKafkaTopicPartitions();
+  public Map<String, Integer> getTopicsAndPartitions();
 
   public int getS3MaxObjectSize();
   public int getKafkaMaxMessageSize();

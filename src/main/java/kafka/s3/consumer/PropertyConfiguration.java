@@ -1,5 +1,7 @@
 package kafka.s3.consumer;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Properties;
 
 public class PropertyConfiguration implements Configuration {
@@ -12,10 +14,9 @@ public class PropertyConfiguration implements Configuration {
   private static final String PROP_S3_PREFIX = "s3.prefix";
   private static final String PROP_KAFKA_HOST = "kafka.host";
   private static final String PROP_KAFKA_PORT = "kafka.port";
-  private static final String PROP_KAFKA_TOPIC = "kafka.topic";
-  private static final String PROP_KAFKA_TOPIC_PARTITIONS = "kafka.topic.partitions";
   private static final String PROP_S3_MAX_OBJECT_SIZE = "s3.maxobjectsize";
   private static final String PROP_KAFKA_MAX_MESSAGE_SIZE = "kafka.maxmessagesize";
+  private static final String PROP_KAFKA_TOPICS = "kafka.topics";
 
   public PropertyConfiguration(Properties props) {
     this.props = props;
@@ -76,21 +77,19 @@ public class PropertyConfiguration implements Configuration {
   }
 
   @Override
-  public String getKafkaTopic() {
-    String kafkaTopic = props.getProperty(PROP_KAFKA_TOPIC);
-    if (kafkaTopic == null || kafkaTopic.isEmpty()) {
-      throw new RuntimeException("Invalid property " + PROP_KAFKA_TOPIC);
+  public Map<String, Integer> getTopicsAndPartitions() {
+    HashMap<String, Integer> result = new HashMap<String,Integer>();
+    String kafkaTopics = props.getProperty(PROP_KAFKA_TOPICS);
+    if (kafkaTopics == null || kafkaTopics.isEmpty()) {
+      throw new RuntimeException("Invalid property " + PROP_KAFKA_TOPICS);
     }
-    return kafkaTopic;
-  }
-
-  @Override
-  public int getKafkaTopicPartitions() {
-    String kafkaTopicPartitions = props.getProperty(PROP_KAFKA_TOPIC_PARTITIONS);
-    if (kafkaTopicPartitions == null || kafkaTopicPartitions.isEmpty()) {
-      throw new RuntimeException("Invalid property " + PROP_KAFKA_TOPIC_PARTITIONS);
+    for (String topics: kafkaTopics.split(",")) {
+      String[] topicPart = topics.split(":");
+      if (result.containsKey(topicPart[0]))
+        throw new RuntimeException("Duplicate topic " + topicPart[0]);
+      result.put(topicPart[0], Integer.valueOf(topicPart[1]));
     }
-    return Integer.valueOf(kafkaTopicPartitions);
+    return result;
   }
 
   @Override
