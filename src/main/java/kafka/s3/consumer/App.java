@@ -1,10 +1,18 @@
 package kafka.s3.consumer;
 
-import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.IOException;
-import java.util.*;
+import java.io.OutputStream;
+import java.nio.channels.Channels;
+import java.nio.channels.WritableByteChannel;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -13,84 +21,67 @@ import kafka.javaapi.consumer.SimpleConsumer;
 import kafka.javaapi.message.MessageSet;
 import kafka.message.MessageAndOffset;
 
+import org.apache.log4j.Logger;
+
 import com.amazonaws.auth.BasicAWSCredentials;
 import com.amazonaws.services.s3.AmazonS3Client;
 import com.amazonaws.services.s3.model.ListObjectsRequest;
-import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.amazonaws.services.s3.model.S3ObjectSummary;
 
 public class App
 {
+  static Logger logger = Logger.getLogger(App.class);
 
   static Configuration conf;
-  static String bucket;
-  static AmazonS3Client awsClient;
   private static ExecutorService pool;
 
   /*
   mvn exec:java -Dexec.mainClass="kafka.s3.consumer.App" -Dexec.args="app.properties"
    */
-    public static void main( String[] args ) throws IOException, java.lang.InterruptedException {
-      conf = loadConfiguration(args);
+  public static void main( String[] args ) throws IOException, java.lang.InterruptedException {
 
-      awsClient = new AmazonS3Client(new BasicAWSCredentials(conf.getS3AccessKey(), conf.getS3SecretKey()));
-      bucket = conf.getS3Bucket();
+    conf = loadConfiguration(args);
 
-      Map<String, Integer> topics = conf.getTopicsAndPartitions();
+    Map<String, Integer> topics = conf.getTopicsAndPartitions();
 
-      List<Worker> workers = new LinkedList<Worker>();
+    List<Worker> workers = new LinkedList<Worker>();
 
-      for (String topic: topics.keySet()) {
-        for (int partition=0; partition<topics.get(topic); partition++)
-          workers.add(new Worker(conf.getKafkaHost(), topic, partition));
+    for (String topic: topics.keySet()) {
+      for (int partition=0; partition<topics.get(topic); partition++) {
+        workers.add(new Worker(topic, partition));
       }
-
-      pool = Executors.newFixedThreadPool(workers.size());
-
-      for (Worker worker: workers)
-        pool.submit(worker);
     }
+
+    pool = Executors.newFixedThreadPool(workers.size());
+
+    for (Worker worker: workers) {
+      pool.submit(worker);
+    }
+  }
 
   private static class Worker implements Runnable {
 
-    private final String brokerHost;
     private final String topic;
     private final int partition;
 
-    private Worker(String brokerHost, String topic, int partition) {
-      this.brokerHost = brokerHost;
+    private Worker(String topic, int partition) {
       this.topic = topic;
       this.partition = partition;
     }
 
     @Override
     public void run() {
-      String path  = conf.getS3Prefix() + "/" + topic + "/";
 
-      long offset = getMaxOffsetFromPath(path, partition);
-      long curOffset = offset;
-      byte[] buffer = new byte[conf.getS3MaxObjectSize()];
-      int bytesWritten = 0;
-
-      Iterator<MessageAndOffset> messages = new MessageStream(topic,partition,offset);
-      while (messages.hasNext()) {
-        MessageAndOffset messageAndOffset = messages.next();
-        int messageSize = messageAndOffset.message().payload().remaining();
-        System.err.println("Writing message with size: " + messageSize);
-
-        if (bytesWritten + messageSize + 1 > conf.getS3MaxObjectSize()) {
-          System.err.println("Flushing buffer to S3 size: " + bytesWritten);
-          awsClient.putObject(bucket, path + partition + "_" + offset + "_" + curOffset, new ByteArrayInputStream(buffer, 0, bytesWritten), new ObjectMetadata());
-          offset = curOffset;
-          bytesWritten = 0;
+      try {
+        S3Sink sink = new S3Sink(topic,partition);
+        long offset = sink.getMaxCommittedOffset();
+        Iterator<MessageAndOffset> messages = new MessageStream(topic,partition,offset);
+        while (messages.hasNext()) {
+          MessageAndOffset messageAndOffset = messages.next();
+          sink.append(messageAndOffset);
         }
-
-        messageAndOffset.message().payload().get(buffer,bytesWritten,messageSize);
-        bytesWritten += messageSize;
-        buffer[bytesWritten] = '\n';
-        bytesWritten += 1;
-
-        curOffset = messageAndOffset.offset();
+      } catch (IOException e) {
+        throw new RuntimeException(e);
       }
     }
   }
@@ -110,29 +101,91 @@ public class App
     return new PropertyConfiguration(props);
   }
 
-  public static long getMaxOffsetFromPath(String path, int partition) {
-    System.out.println("Getting max offset for " + path + partition);
-    List<S3ObjectSummary> objectSummaries = awsClient.listObjects(new ListObjectsRequest().withBucketName(bucket).withDelimiter("/").withPrefix(path + partition)).getObjectSummaries();
+  private static class S3Sink {
 
-    long maxOffset = 0;
+    private String topic;
+    private int partition;
 
-    for (S3ObjectSummary objectSummary : objectSummaries) {
-      long[] offsets = getOffsetsFromFileName(objectSummary.getKey().substring(path.length()));
-      System.out.println(objectSummary.getKey());
-      if (offsets[1] > maxOffset)
-        maxOffset = offsets[1];
+    private String bucket;
+    private AmazonS3Client awsClient;
+
+    long startOffset;
+    long endOffset;
+    int bytesWritten;
+
+    File tmpFile;
+    OutputStream tmpOutputStream;
+    WritableByteChannel tmpChannel;
+
+    public S3Sink(String topic, int partition) throws FileNotFoundException, IOException {
+      this.topic = topic;
+      this.partition = partition;
+
+      bucket = conf.getS3Bucket();
+      awsClient = new AmazonS3Client(new BasicAWSCredentials(conf.getS3AccessKey(), conf.getS3SecretKey()));
+
+      startOffset = endOffset = fetchLastCommittedOffset();
+      bytesWritten = 0;
+
+      tmpFile = File.createTempFile("s3sink", null);
+      logger.debug("Created tmpFile: " + tmpFile);
+      tmpOutputStream = new FileOutputStream(tmpFile);
+      tmpChannel = Channels.newChannel(tmpOutputStream);
     }
-    return maxOffset;
-  }
 
-  public static long[] getOffsetsFromFileName(String fileName) {
-    long[] result = new long[3];
+    public void append(MessageAndOffset messageAndOffset) throws IOException {
 
-    String[] offsets = fileName.split("_");
-    result[0] = Long.valueOf(offsets[1]);
-    result[1] = Long.valueOf(offsets[2]);
+      int messageSize = messageAndOffset.message().payload().remaining();
+      logger.debug("Appending message with size: " + messageSize);
 
-    return result;
+      if (bytesWritten + messageSize + 1 > conf.getS3MaxObjectSize()) {
+        logger.debug("Uploading chunk to S3. Size is: " + bytesWritten);
+        String key = getKeyPrefix() + startOffset + "_" + endOffset;
+        awsClient.putObject(bucket, key, tmpFile);
+        tmpChannel.close();
+        tmpOutputStream.close();
+        tmpFile.delete();
+        tmpFile = File.createTempFile("s3sink", null);
+        logger.debug("Created tmpFile: " + tmpFile);
+        tmpOutputStream = new FileOutputStream(tmpFile);
+        tmpChannel = Channels.newChannel(tmpOutputStream);
+        startOffset = endOffset;
+        bytesWritten = 0;
+      }
+
+      tmpChannel.write(messageAndOffset.message().payload());
+      tmpOutputStream.write('\n');
+      bytesWritten += messageSize + 1;
+
+      endOffset = messageAndOffset.offset();
+    }
+
+    public long getMaxCommittedOffset() {
+      return startOffset;
+    }
+
+    public long fetchLastCommittedOffset() {
+      logger.debug("Getting max offset for " + topic + ":" + partition);
+      String prefix = getKeyPrefix();
+      logger.debug("Listing keys for bucket/prefix " + bucket + "/" + prefix);
+      List<S3ObjectSummary> objectSummaries = awsClient.listObjects(new ListObjectsRequest().withBucketName(bucket).withDelimiter("/").withPrefix(prefix)).getObjectSummaries();
+      logger.debug("Received result " + objectSummaries);
+
+      long maxOffset = 0;
+
+      for (S3ObjectSummary objectSummary : objectSummaries) {
+        logger.debug(objectSummary.getKey());
+        String[] offsets = objectSummary.getKey().substring(prefix.length()).split("_");
+        long endOffset = Long.valueOf(offsets[1]);
+        if (endOffset > maxOffset)
+          maxOffset = endOffset;
+      }
+      return maxOffset;
+    }
+
+    private String getKeyPrefix() {
+      return conf.getS3Prefix() + "/" + topic + "/" + conf.getKafkaBrokerId() + "_" + partition + "_";
+    }
   }
 
   private static class MessageStream implements Iterator<MessageAndOffset> {
@@ -145,30 +198,34 @@ public class App
     private long offset;
 
     public MessageStream(String topic, int partition, long offset) {
+      logger.debug("Message stream created: " + topic + ":" + partition + "/" + offset);
       this.topic = topic;
       this.partition = partition;
       this.offset = offset;
       consumer = new SimpleConsumer(conf.getKafkaHost(), conf.getKafkaPort(), 5000, 4*1024);
+      logger.debug("Created kafka consumer: " + consumer);
     }
 
+    @Override
     public boolean hasNext() {
       return true;
     }
 
+    @Override
     public MessageAndOffset next() {
       if (messageSetIterator == null || !messageSetIterator.hasNext()) {
-        System.err.println("Fetching message from offset: " + offset);
+        logger.debug("Fetching message from offset: " + offset);
         FetchRequest fetchRequest = new FetchRequest(topic, partition, offset, conf.getKafkaMaxMessageSize());
         MessageSet messageSet = consumer.fetch(fetchRequest);
         while (!messageSet.iterator().hasNext()) {
-          System.err.println("No messages returned. Sleeping for 10s.");
+          logger.debug("No messages returned. Sleeping for 10s.");
           try {
             Thread.sleep(10000);
           } catch (InterruptedException e) {
             throw new RuntimeException(e);
           }
           messageSet = consumer.fetch(fetchRequest);
-         }
+        }
         messageSetIterator = messageSet.iterator();
       }
       MessageAndOffset message = messageSetIterator.next();
@@ -176,6 +233,7 @@ public class App
       return message;
     }
 
+    @Override
     public void remove() {
       throw new UnsupportedOperationException("Method remove is not supported by this iterator.");
     }
