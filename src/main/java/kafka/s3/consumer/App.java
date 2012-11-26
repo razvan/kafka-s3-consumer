@@ -95,6 +95,7 @@ public class App {
 
         private String topic;
         private int partition;
+        private boolean compression;
 
         private String bucket;
         private AmazonS3Client awsClient;
@@ -110,6 +111,7 @@ public class App {
         public S3Sink(String topic, int partition, boolean compression) throws FileNotFoundException, IOException {
             this.topic = topic;
             this.partition = partition;
+            this.compression = compression;
 
             bucket = conf.getS3Bucket();
             awsClient = new AmazonS3Client(new BasicAWSCredentials(conf.getS3AccessKey(), conf.getS3SecretKey()));
@@ -143,7 +145,11 @@ public class App {
                 tmpFile.delete();
                 tmpFile = File.createTempFile("s3sink", null);
                 logger.debug("Created tmpFile: " + tmpFile);
-                tmpOutputStream = new FileOutputStream(tmpFile);
+                if (compression) {
+                    tmpOutputStream = new GZIPOutputStream(new FileOutputStream(tmpFile));
+                } else {
+                    tmpOutputStream = new FileOutputStream(tmpFile);
+                }
                 tmpChannel = Channels.newChannel(tmpOutputStream);
                 startOffset = endOffset;
                 bytesWritten = 0;
