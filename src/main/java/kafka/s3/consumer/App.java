@@ -6,7 +6,6 @@ import com.amazonaws.services.s3.model.ListObjectsRequest;
 import com.amazonaws.services.s3.model.S3ObjectSummary;
 import kafka.api.FetchRequest;
 import kafka.api.OffsetRequest;
-import kafka.common.InvalidMessageSizeException;
 import kafka.javaapi.consumer.SimpleConsumer;
 import kafka.javaapi.message.MessageSet;
 import kafka.message.MessageAndOffset;
@@ -18,6 +17,7 @@ import java.nio.channels.WritableByteChannel;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.zip.GZIPOutputStream;
 
 public class App {
     static Logger logger = Logger.getLogger(App.class);
@@ -63,7 +63,7 @@ public class App {
         public void run() {
 
             try {
-                S3Sink sink = new S3Sink(topic, partition);
+                S3Sink sink = new S3Sink(topic, partition, conf.isCompressed());
                 long offset = sink.getMaxCommittedOffset();
                 Iterator<MessageAndOffset> messages = new MessageStream(topic, partition, offset);
                 while (messages.hasNext()) {
@@ -107,7 +107,7 @@ public class App {
         OutputStream tmpOutputStream;
         WritableByteChannel tmpChannel;
 
-        public S3Sink(String topic, int partition) throws FileNotFoundException, IOException {
+        public S3Sink(String topic, int partition, boolean compression) throws FileNotFoundException, IOException {
             this.topic = topic;
             this.partition = partition;
 
@@ -119,7 +119,13 @@ public class App {
 
             tmpFile = File.createTempFile("s3sink", null);
             logger.debug("Created tmpFile: " + tmpFile);
-            tmpOutputStream = new FileOutputStream(tmpFile);
+
+            logger.debug("Compression: " + compression);
+            if (compression) {
+                tmpOutputStream = new GZIPOutputStream(new FileOutputStream(tmpFile));
+            } else {
+                tmpOutputStream = new FileOutputStream(tmpFile);
+            }
             tmpChannel = Channels.newChannel(tmpOutputStream);
         }
 
@@ -175,8 +181,6 @@ public class App {
              */
 
 
-
-
             return maxOffset;
         }
 
@@ -211,7 +215,7 @@ public class App {
         @Override
         public MessageAndOffset next() {
             try {
-                if (offset == 0){
+                if (offset == 0) {
                     offset = consumer.getOffsetsBefore(topic, partition, OffsetRequest.EarliestTime(), 1)[0];
                     logger.debug("Offset re-configured to :" + offset);
                 }
