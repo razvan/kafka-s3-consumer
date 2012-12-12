@@ -25,6 +25,7 @@ public class App {
     static Configuration conf;
     private static ExecutorService pool;
     private static boolean cleanStart = false;
+
     /*
    mvn exec:java -Dexec.mainClass="kafka.s3.consumer.App" -Dexec.args="app.properties"
     */
@@ -80,15 +81,16 @@ public class App {
         Properties props = new Properties();
 
         try {
-            if (args == null || args.length >=1) {
-
-                if(args[2] != null && args[2].equals("clean")){
-                    cleanStart  = true;
-                }
-
-                props.load(App.class.getResourceAsStream("/app.properties"));
-            } else {
+            if(args.length > 0) {
                 props.load(new FileInputStream(new File(args[0])));
+                if (args.length >= 2) {
+                    if (args[1].equals("clean")) {
+                        cleanStart = true;
+                    }
+                }
+            } else {
+               System.err.println("Usage: jar -jar <jarfile> property file <optional: clean>");
+               System.exit(1);
             }
         } catch (IOException e) {
             throw new RuntimeException(e);
@@ -228,7 +230,8 @@ public class App {
             try {
                 if (offset == 0 || cleanStart) {
                     offset = consumer.getOffsetsBefore(topic, partition, OffsetRequest.EarliestTime(), 1)[0];
-                    logger.debug("Offset re-configured to :" + offset);
+                    logger.info("Offset re-configured to :" + offset);
+                    cleanStart = false;
                 }
 
                 if (messageSetIterator == null || !messageSetIterator.hasNext()) {
