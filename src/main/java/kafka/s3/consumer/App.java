@@ -24,7 +24,7 @@ public class App {
 
     static Configuration conf;
     private static ExecutorService pool;
-
+    private static boolean cleanStart = false;
     /*
    mvn exec:java -Dexec.mainClass="kafka.s3.consumer.App" -Dexec.args="app.properties"
     */
@@ -80,7 +80,12 @@ public class App {
         Properties props = new Properties();
 
         try {
-            if (args == null || args.length != 1) {
+            if (args == null || args.length >=1) {
+
+                if(args[2] != null && args[2].equals("clean")){
+                    cleanStart  = true;
+                }
+
                 props.load(App.class.getResourceAsStream("/app.properties"));
             } else {
                 props.load(new FileInputStream(new File(args[0])));
@@ -221,7 +226,7 @@ public class App {
         @Override
         public MessageAndOffset next() {
             try {
-                if (offset == 0) {
+                if (offset == 0 || cleanStart) {
                     offset = consumer.getOffsetsBefore(topic, partition, OffsetRequest.EarliestTime(), 1)[0];
                     logger.debug("Offset re-configured to :" + offset);
                 }
