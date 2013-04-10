@@ -82,7 +82,7 @@ public class App {
 
         try {
             if(args.length > 0) {
-                props.load(new FileInputStream(new File(args[0])));
+                props.load(ByteArrayInputStream(resolveEnvVars(args[0]).getBytes()));
                 if (args.length >= 2) {
                     if (args[1].equals("clean")) {
                         cleanStart = true;
@@ -97,6 +97,39 @@ public class App {
         }
         return new PropertyConfiguration(props);
     }
+
+    /* Environment variable substitution for properties files from http://stackoverflow.com/a/9725352/370800
+     * Returns input string with environment variable references expanded, e.g. $SOME_VAR or ${SOME_VAR}
+     */
+    private static String resolveEnvVars(String filename) {
+        String input;
+        FileInputStream stream = new FileInputStream(new File());
+        try {
+            FileChannel fc = stream.getChannel();
+            MappedByteBuffer bb = fc.map(FileChannel.MapMode.READ_ONLY, 0, fc.size());
+            /* Instead of using default, pass in a decoder. */
+            input = Charset.defaultCharset().decode(bb).toString();
+        }
+        finally {
+            stream.close();
+        }
+          
+        if (null == input) {
+            return null;
+        }
+        // match ${ENV_VAR_NAME} or $ENV_VAR_NAME
+        Pattern p = Pattern.compile("\\$\\{(\\w+)\\}|\\$(\\w+)");
+        Matcher m = p.matcher(input); // get a matcher object
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            String envVarName = null == m.group(1) ? m.group(2) : m.group(1);
+            String envVarValue = System.getenv(envVarName);
+            m.appendReplacement(sb, null == envVarValue ? "" : envVarValue);
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
 
     private static class S3Sink {
 
