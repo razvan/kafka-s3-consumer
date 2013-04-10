@@ -106,7 +106,7 @@ public class App {
     /* Environment variable substitution for properties files from http://stackoverflow.com/a/9725352/370800
      * Returns input string with environment variable references expanded, e.g. $SOME_VAR or ${SOME_VAR}
      */
-    private static String resolveEnvVars(String filename) {
+    private static String resolveEnvVars(String filename) throws IOException {
         String input;
         FileInputStream stream = new FileInputStream(new File(filename));
         try {
