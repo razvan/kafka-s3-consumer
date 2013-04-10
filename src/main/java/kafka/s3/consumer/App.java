@@ -12,9 +12,14 @@ import kafka.message.MessageAndOffset;
 import org.apache.log4j.Logger;
 
 import java.io.*;
+import java.nio.MappedByteBuffer;
+import java.nio.charset.Charset;
 import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.*;
+import java.util.regex.Pattern;
+import java.util.regex.Matcher;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.zip.GZIPOutputStream;
@@ -82,7 +87,7 @@ public class App {
 
         try {
             if(args.length > 0) {
-                props.load(ByteArrayInputStream(resolveEnvVars(args[0]).getBytes()));
+                props.load(new ByteArrayInputStream(resolveEnvVars(args[0]).getBytes()));
                 if (args.length >= 2) {
                     if (args[1].equals("clean")) {
                         cleanStart = true;
