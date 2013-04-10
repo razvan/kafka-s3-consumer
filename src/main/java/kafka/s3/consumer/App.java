@@ -108,7 +108,7 @@ public class App {
      */
     private static String resolveEnvVars(String filename) {
         String input;
-        FileInputStream stream = new FileInputStream(new File());
+        FileInputStream stream = new FileInputStream(new File(filename));
         try {
             FileChannel fc = stream.getChannel();
             MappedByteBuffer bb = fc.map(FileChannel.MapMode.READ_ONLY, 0, fc.size());
