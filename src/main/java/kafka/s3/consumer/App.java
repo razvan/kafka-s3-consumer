@@ -65,6 +65,7 @@ public class App {
 
         @Override
         public void run() {
+            System.out.println("Caught shutdown signal, closing pool.");
             this.pool.shutdown();
         }
     }
