@@ -57,7 +57,7 @@ public class App {
         }
     }
 
-    private static class GracefulWorkerShutdown implements Runnable {
+    private static class GracefulWorkerShutdown extends Thread {
         private final ExecutorService pool;
         private GracefulWorkerShutdown(ExecutorService pool) {
             this.pool = pool;
