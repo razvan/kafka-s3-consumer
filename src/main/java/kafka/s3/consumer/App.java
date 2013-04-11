@@ -50,8 +50,22 @@ public class App {
 
         pool = Executors.newFixedThreadPool(workers.size());
 
+        Runtime.getRuntime().addShutdownHook(new GracefulWorkerShutdown());
+
         for (Worker worker : workers) {
             pool.submit(worker);
+        }
+    }
+
+    private static class GracefulWorkerShutdown implements Runnable {
+        private final ExecutorService pool;
+        private GracefulWorkerShutdown(ExecutorService pool) {
+            this.pool = pool;
+        }
+
+        @Override
+        public void run() {
+            this.pool.shutdown();
         }
     }
 
@@ -59,6 +73,7 @@ public class App {
 
         private final String topic;
         private final int partition;
+        private S3Sink sink;
 
         private Worker(String topic, int partition) {
             this.topic = topic;
@@ -67,17 +82,42 @@ public class App {
 
         @Override
         public void run() {
-
             try {
-                S3Sink sink = new S3Sink(topic, partition, conf.isCompressed());
-                long offset = sink.getMaxCommittedOffset();
+                this.sink = new S3Sink(topic, partition, conf.isCompressed());
+                long offset = this.sink.getMaxCommittedOffset();
                 Iterator<MessageAndOffset> messages = new MessageStream(topic, partition, offset);
                 while (messages.hasNext()) {
                     MessageAndOffset messageAndOffset = messages.next();
-                    sink.append(messageAndOffset);
+                    this.sink.append(messageAndOffset);
                 }
             } catch (IOException e) {
+                closeAndNullifySink("exception encountered");
                 throw new RuntimeException(e);
+            }
+            finally {
+                closeAndNullifySink("thread run() completed");
+            }
+        }
+        
+        private void closeAndNullifySink(String logline) {
+            if (this.sink != null) { 
+                try { 
+                    logger.debug("Writing out current buffer to s3 before termination: " + logline);
+                    this.sink.exportCurrentChunkToS3();
+                    this.sink = null;
+                } 
+                catch(IOException ignored) {}  
+            }
+        }
+        
+        @Override
+        protected void finalize() throws Throwable {
+            try{
+                if (this.sink != null) { this.sink.exportCurrentChunkToS3(); }    
+            } catch(Throwable t) {
+                throw t;
+            } finally {
+                super.finalize();
             }
         }
     }
@@ -176,28 +216,32 @@ public class App {
             tmpChannel = Channels.newChannel(tmpOutputStream);
         }
 
+        public void exportCurrentChunkToS3() throws IOException {
+            logger.debug("Uploading chunk to S3. Size is: " + bytesWritten);
+            String key = getKeyPrefix() + startOffset + "_" + endOffset;
+            awsClient.putObject(bucket, key, tmpFile);
+            tmpChannel.close();
+            tmpOutputStream.close();
+            tmpFile.delete();
+            tmpFile = File.createTempFile("s3sink", null);
+            logger.debug("Created tmpFile: " + tmpFile);
+            if (compression) {
+                tmpOutputStream = new GZIPOutputStream(new FileOutputStream(tmpFile));
+            } else {
+                tmpOutputStream = new FileOutputStream(tmpFile);
+            }
+            tmpChannel = Channels.newChannel(tmpOutputStream);
+            startOffset = endOffset;
+            bytesWritten = 0;
+        }
+
         public void append(MessageAndOffset messageAndOffset) throws IOException {
 
             int messageSize = messageAndOffset.message().payload().remaining();
             logger.debug("Appending message with size: " + messageSize);
 
             if (bytesWritten + messageSize + 1 > conf.getS3MaxObjectSize()) {
-                logger.debug("Uploading chunk to S3. Size is: " + bytesWritten);
-                String key = getKeyPrefix() + startOffset + "_" + endOffset;
-                awsClient.putObject(bucket, key, tmpFile);
-                tmpChannel.close();
-                tmpOutputStream.close();
-                tmpFile.delete();
-                tmpFile = File.createTempFile("s3sink", null);
-                logger.debug("Created tmpFile: " + tmpFile);
-                if (compression) {
-                    tmpOutputStream = new GZIPOutputStream(new FileOutputStream(tmpFile));
-                } else {
-                    tmpOutputStream = new FileOutputStream(tmpFile);
-                }
-                tmpChannel = Channels.newChannel(tmpOutputStream);
-                startOffset = endOffset;
-                bytesWritten = 0;
+                exportCurrentChunkToS3();
             }
 
             tmpChannel.write(messageAndOffset.message().payload());
