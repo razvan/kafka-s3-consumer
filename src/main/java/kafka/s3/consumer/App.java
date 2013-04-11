@@ -50,7 +50,7 @@ public class App {
 
         pool = Executors.newFixedThreadPool(workers.size());
 
-        Runtime.getRuntime().addShutdownHook(new GracefulWorkerShutdown());
+        Runtime.getRuntime().addShutdownHook(new GracefulWorkerShutdown(pool));
 
         for (Worker worker : workers) {
             pool.submit(worker);
