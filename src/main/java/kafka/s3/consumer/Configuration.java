@@ -16,4 +16,5 @@ public interface Configuration {
 
   public int getS3MaxObjectSize();
   public int getKafkaMaxMessageSize();
+    public boolean isCompressed();
 }
