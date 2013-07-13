@@ -12,9 +12,14 @@ import kafka.message.MessageAndOffset;
 import org.apache.log4j.Logger;
 
 import java.io.*;
+import java.nio.MappedByteBuffer;
+import java.nio.charset.Charset;
 import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.*;
+import java.util.regex.Pattern;
+import java.util.regex.Matcher;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.zip.GZIPOutputStream;
@@ -45,8 +50,23 @@ public class App {
 
         pool = Executors.newFixedThreadPool(workers.size());
 
+        Runtime.getRuntime().addShutdownHook(new GracefulWorkerShutdown(pool));
+
         for (Worker worker : workers) {
             pool.submit(worker);
+        }
+    }
+
+    private static class GracefulWorkerShutdown extends Thread {
+        private final ExecutorService pool;
+        private GracefulWorkerShutdown(ExecutorService pool) {
+            this.pool = pool;
+        }
+
+        @Override
+        public void run() {
+            System.out.println("Caught shutdown signal, closing pool.");
+            this.pool.shutdown();
         }
     }
 
@@ -54,6 +74,7 @@ public class App {
 
         private final String topic;
         private final int partition;
+        private S3Sink sink;
 
         private Worker(String topic, int partition) {
             this.topic = topic;
@@ -62,17 +83,42 @@ public class App {
 
         @Override
         public void run() {
-
             try {
-                S3Sink sink = new S3Sink(topic, partition, conf.isCompressed());
-                long offset = sink.getMaxCommittedOffset();
+                this.sink = new S3Sink(topic, partition, conf.isCompressed());
+                long offset = this.sink.getMaxCommittedOffset();
                 Iterator<MessageAndOffset> messages = new MessageStream(topic, partition, offset);
                 while (messages.hasNext()) {
                     MessageAndOffset messageAndOffset = messages.next();
-                    sink.append(messageAndOffset);
+                    this.sink.append(messageAndOffset);
                 }
             } catch (IOException e) {
+                closeAndNullifySink("exception encountered");
                 throw new RuntimeException(e);
+            }
+            finally {
+                closeAndNullifySink("thread run() completed");
+            }
+        }
+        
+        private void closeAndNullifySink(String logline) {
+            if (this.sink != null) { 
+                try { 
+                    logger.debug("Writing out current buffer to s3 before termination: " + logline);
+                    this.sink.exportCurrentChunkToS3();
+                    this.sink = null;
+                } 
+                catch(IOException ignored) {}  
+            }
+        }
+        
+        @Override
+        protected void finalize() throws Throwable {
+            try{
+                if (this.sink != null) { this.sink.exportCurrentChunkToS3(); }    
+            } catch(Throwable t) {
+                throw t;
+            } finally {
+                super.finalize();
             }
         }
     }
@@ -82,7 +128,7 @@ public class App {
 
         try {
             if(args.length > 0) {
-                props.load(new FileInputStream(new File(args[0])));
+                props.load(new ByteArrayInputStream(resolveEnvVars(args[0]).getBytes()));
                 if (args.length >= 2) {
                     if (args[1].equals("clean")) {
                         cleanStart = true;
@@ -97,6 +143,39 @@ public class App {
         }
         return new PropertyConfiguration(props);
     }
+
+    /* Environment variable substitution for properties files from http://stackoverflow.com/a/9725352/370800
+     * Returns input string with environment variable references expanded, e.g. $SOME_VAR or ${SOME_VAR}
+     */
+    private static String resolveEnvVars(String filename) throws IOException {
+        String input;
+        FileInputStream stream = new FileInputStream(new File(filename));
+        try {
+            FileChannel fc = stream.getChannel();
+            MappedByteBuffer bb = fc.map(FileChannel.MapMode.READ_ONLY, 0, fc.size());
+            /* Instead of using default, pass in a decoder. */
+            input = Charset.defaultCharset().decode(bb).toString();
+        }
+        finally {
+            stream.close();
+        }
+          
+        if (null == input) {
+            return null;
+        }
+        // match ${ENV_VAR_NAME} or $ENV_VAR_NAME
+        Pattern p = Pattern.compile("\\$\\{(\\w+)\\}|\\$(\\w+)");
+        Matcher m = p.matcher(input); // get a matcher object
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            String envVarName = null == m.group(1) ? m.group(2) : m.group(1);
+            String envVarValue = System.getenv(envVarName);
+            m.appendReplacement(sb, null == envVarValue ? "" : envVarValue);
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
 
     private static class S3Sink {
 
@@ -138,28 +217,32 @@ public class App {
             tmpChannel = Channels.newChannel(tmpOutputStream);
         }
 
+        public void exportCurrentChunkToS3() throws IOException {
+            logger.debug("Uploading chunk to S3. Size is: " + bytesWritten);
+            String key = getKeyPrefix() + startOffset + "_" + endOffset;
+            awsClient.putObject(bucket, key, tmpFile);
+            tmpChannel.close();
+            tmpOutputStream.close();
+            tmpFile.delete();
+            tmpFile = File.createTempFile("s3sink", null);
+            logger.debug("Created tmpFile: " + tmpFile);
+            if (compression) {
+                tmpOutputStream = new GZIPOutputStream(new FileOutputStream(tmpFile));
+            } else {
+                tmpOutputStream = new FileOutputStream(tmpFile);
+            }
+            tmpChannel = Channels.newChannel(tmpOutputStream);
+            startOffset = endOffset;
+            bytesWritten = 0;
+        }
+
         public void append(MessageAndOffset messageAndOffset) throws IOException {
 
             int messageSize = messageAndOffset.message().payload().remaining();
             logger.debug("Appending message with size: " + messageSize);
 
             if (bytesWritten + messageSize + 1 > conf.getS3MaxObjectSize()) {
-                logger.debug("Uploading chunk to S3. Size is: " + bytesWritten);
-                String key = getKeyPrefix() + startOffset + "_" + endOffset;
-                awsClient.putObject(bucket, key, tmpFile);
-                tmpChannel.close();
-                tmpOutputStream.close();
-                tmpFile.delete();
-                tmpFile = File.createTempFile("s3sink", null);
-                logger.debug("Created tmpFile: " + tmpFile);
-                if (compression) {
-                    tmpOutputStream = new GZIPOutputStream(new FileOutputStream(tmpFile));
-                } else {
-                    tmpOutputStream = new FileOutputStream(tmpFile);
-                }
-                tmpChannel = Channels.newChannel(tmpOutputStream);
-                startOffset = endOffset;
-                bytesWritten = 0;
+                exportCurrentChunkToS3();
             }
 
             tmpChannel.write(messageAndOffset.message().payload());
