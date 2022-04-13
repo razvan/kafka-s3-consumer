@@ -1,3 +1,5 @@
+# !!! THIS REPO IS ARCHIVED !!!#
+
 kafka-s3-consumer
 =================
 
